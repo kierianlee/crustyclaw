@@ -1,8 +1,7 @@
 /target
-/data/config.json
-/data/session.json
-/data/scheduler.json
 *.swp
 *.swo
 .DS_Store
 .env
+.claude/
+plugin/bin

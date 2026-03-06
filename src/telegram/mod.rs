@@ -12,6 +12,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::task::{JoinHandle, JoinSet};
 
 use crate::claude::{InvocationQueue, RequestOrigin, ResponseStatus, SessionManager};
+use crate::common::chatlog::{ChatDirection, ChatLog};
 use crate::common::config::DaemonConfig;
 use crate::common::util::{short_id, truncate_str};
 #[cfg(unix)]
@@ -87,6 +88,7 @@ pub fn spawn(
     data_dir: PathBuf,
     shared_bot: Arc<tokio::sync::RwLock<Bot>>,
     permission_server: OptionalPermissionServer,
+    chat_log: Arc<ChatLog>,
 ) -> JoinHandle<()> {
     tokio::spawn(poll_loop(
         config,
@@ -96,6 +98,7 @@ pub fn spawn(
         data_dir,
         shared_bot,
         permission_server,
+        chat_log,
     ))
 }
 
@@ -108,6 +111,7 @@ async fn poll_loop(
     data_dir: PathBuf,
     shared_bot: Arc<tokio::sync::RwLock<Bot>>,
     permission_server: OptionalPermissionServer,
+    chat_log: Arc<ChatLog>,
 ) {
     const MAX_BACKOFF: u64 = 120;
 
@@ -151,6 +155,7 @@ async fn poll_loop(
         session: session.clone(),
         scheduler: scheduler.clone(),
         data_dir: data_dir.clone(),
+        chat_log,
     });
     let handler_semaphore = Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_HANDLERS));
     let callback_semaphore = Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_CALLBACKS));
@@ -294,6 +299,7 @@ struct HandlerState {
     session: Arc<SessionManager>,
     scheduler: Arc<Scheduler>,
     data_dir: PathBuf,
+    chat_log: Arc<ChatLog>,
 }
 
 /// Shared context for message and command handlers, avoiding repeated parameter lists.
@@ -443,6 +449,10 @@ async fn handle_message(ctx: &HandlerCtx<'_>, msg: &Message) {
         "Telegram message"
     );
 
+    ctx.state
+        .chat_log
+        .push(ChatDirection::Incoming, chat_id, prompt.clone());
+
     // Keep "typing…" visible while Claude is working.
     let _ = bot
         .send_chat_action(ChatId(chat_id), ChatAction::Typing)
@@ -492,18 +502,24 @@ async fn handle_message(ctx: &HandlerCtx<'_>, msg: &Message) {
     match result {
         Ok(Ok(response)) => {
             let output = response.into_display_text();
+            ctx.state
+                .chat_log
+                .push(ChatDirection::Outgoing, chat_id, output.clone());
             send_chunked(bot, chat_id, &output).await;
         }
         Ok(Err(e)) => {
-            let _ = send_text(bot, chat_id, &format!("Error: {e}")).await;
+            let msg = format!("Error: {e}");
+            ctx.state
+                .chat_log
+                .push(ChatDirection::Outgoing, chat_id, msg.clone());
+            let _ = send_text(bot, chat_id, &msg).await;
         }
         Err(_) => {
-            let _ = send_text(
-                bot,
-                chat_id,
-                "Request timed out waiting for a response. Try again later.",
-            )
-            .await;
+            let msg = "Request timed out waiting for a response. Try again later.";
+            ctx.state
+                .chat_log
+                .push(ChatDirection::Outgoing, chat_id, msg.to_string());
+            let _ = send_text(bot, chat_id, msg).await;
         }
     }
 }
@@ -528,8 +544,8 @@ async fn handle_command(ctx: &HandlerCtx<'_>, chat_id: i64, is_admin: bool, text
         .next()
         .unwrap_or("");
 
-    // Admin-only commands: /reset, /schedule, /jobs, /unschedule.
-    if matches!(cmd, "/reset" | "/schedule" | "/jobs" | "/unschedule") && !is_admin {
+    // Admin-only commands: /stop, /reset, /schedule, /jobs, /unschedule.
+    if matches!(cmd, "/stop" | "/reset" | "/schedule" | "/jobs" | "/unschedule") && !is_admin {
         let _ = send_text(bot, chat_id, "This command is restricted to the admin.").await;
         return;
     }
@@ -542,6 +558,18 @@ async fn handle_command(ctx: &HandlerCtx<'_>, chat_id: i64, is_admin: bool, text
                 "crustyclaw daemon active. Send a message to chat with Claude.",
             )
             .await;
+        }
+        "/stop" => {
+            let _ = send_text(bot, chat_id, "Shutting down...").await;
+            // Send SIGTERM to ourselves for a graceful shutdown.
+            #[cfg(unix)]
+            {
+                unsafe { libc::kill(libc::getpid(), libc::SIGTERM); }
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = send_text(bot, chat_id, "Remote stop not supported on this platform.").await;
+            }
         }
         "/status" => {
             let state = session.snapshot().await;
@@ -589,7 +617,7 @@ async fn handle_command(ctx: &HandlerCtx<'_>, chat_id: i64, is_admin: bool, text
             let _ = send_text(
                 bot,
                 chat_id,
-                "Unknown command. Available: /start, /status, /reset, /schedule, /jobs, /unschedule",
+                "Unknown command. Available: /start, /stop, /status, /reset, /schedule, /jobs, /unschedule",
             )
             .await;
         }

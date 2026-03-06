@@ -2,6 +2,7 @@ pub mod heartbeat;
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use specta::Type;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -18,7 +19,7 @@ use crate::telegram;
 // ---- Types ----
 
 /// A scheduled job record.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
 pub struct JobRecord {
     /// Internal cron scheduler ID (changes on daemon restart).
     #[serde(skip)]
@@ -33,7 +34,7 @@ pub struct JobRecord {
 }
 
 /// What a scheduled job does when it fires.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum JobAction {
     /// Run a prompt through Claude, send the result to a Telegram chat.

@@ -3,12 +3,13 @@ use std::sync::{Arc, Mutex};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use specta::Type;
 use tokio::task::JoinHandle;
 
-use super::util::{atomic_write, truncate_str};
+use super::util::{atomic_write, atomic_write_sync, truncate_str};
 
 /// Runtime status snapshot, written periodically to status.json.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
 pub struct RuntimeStatus {
     pub daemon_started_at: DateTime<Utc>,
     pub total_invocations: u64,
@@ -24,7 +25,7 @@ pub struct RuntimeStatus {
     pub session_id_short: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
 pub struct ErrorRecord {
     pub message: String,
     pub at: DateTime<Utc>,
@@ -151,6 +152,83 @@ pub fn spawn_writer(tracker: Arc<StatusTracker>, path: PathBuf) -> JoinHandle<()
 }
 
 // ---------------------------------------------------------------------------
+// Statusline registration in .claude/settings.json
+// ---------------------------------------------------------------------------
+
+/// Write the `statusLine` entry into `{working_dir}/.claude/settings.json`
+/// so Claude Code displays our status bar. Uses the absolute path to the
+/// running binary, like ClaudeClaw does.
+pub fn install_statusline(working_dir: &Path) {
+    let claude_dir = working_dir.join(".claude");
+    if let Err(e) = std::fs::create_dir_all(&claude_dir) {
+        tracing::warn!(error = %e, "Failed to create .claude dir for statusline");
+        return;
+    }
+
+    let settings_path = claude_dir.join("settings.json");
+
+    let mut settings: serde_json::Value = match std::fs::read_to_string(&settings_path) {
+        Ok(contents) => serde_json::from_str(&contents).unwrap_or_else(|_| serde_json::json!({})),
+        Err(_) => serde_json::json!({}),
+    };
+
+    let exe_path = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!(error = %e, "Cannot determine binary path for statusline");
+            return;
+        }
+    };
+    let escaped = exe_path.display().to_string().replace('\'', "'\\''");
+    let command = format!("'{escaped}' statusline");
+
+    settings
+        .as_object_mut()
+        .unwrap()
+        .insert("statusLine".into(), serde_json::json!({
+            "type": "command",
+            "command": command,
+            "refresh": 5
+        }));
+
+    let json = match serde_json::to_string_pretty(&settings) {
+        Ok(j) => j,
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to serialize settings for statusline");
+            return;
+        }
+    };
+
+    if let Err(e) = atomic_write_sync(&settings_path, json.as_bytes()) {
+        tracing::warn!(error = %e, "Failed to write statusline to settings.json");
+    } else {
+        tracing::info!(path = %settings_path.display(), "Installed statusLine");
+    }
+}
+
+/// Remove the `statusLine` entry from `{working_dir}/.claude/settings.json`.
+pub fn remove_statusline(working_dir: &Path) {
+    let settings_path = working_dir.join(".claude").join("settings.json");
+
+    let mut settings: serde_json::Value = match std::fs::read_to_string(&settings_path) {
+        Ok(contents) => match serde_json::from_str(&contents) {
+            Ok(v) => v,
+            Err(_) => return,
+        },
+        Err(_) => return,
+    };
+
+    if let Some(obj) = settings.as_object_mut() {
+        if obj.remove("statusLine").is_some() {
+            if let Ok(json) = serde_json::to_string_pretty(&settings) {
+                let _ = atomic_write_sync(&settings_path, json.as_bytes());
+                tracing::info!("Removed statusLine from settings.json");
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // CLI statusline subcommand
 // ---------------------------------------------------------------------------
 
@@ -158,108 +236,70 @@ pub fn spawn_writer(tracker: Arc<StatusTracker>, path: PathBuf) -> JoinHandle<()
 const STALE_THRESHOLD_SECS: u64 = 15;
 
 pub fn print_statusline(status_path: &Path) {
-    let use_color = is_stdout_tty();
+    let c = true; // Claude Code renders ANSI colors in status line
+    let d = dim(c);
+    let r = reset(c);
 
-    let Ok(metadata) = std::fs::metadata(status_path) else {
-        print!("{}crustyclaw offline{}", dim(use_color), reset(use_color));
-        return;
-    };
+    let top = format!("{d}╭──────── 🦀 crustyclaw 🦀 ────────╮{r}");
+    let bot = format!("{d}╰──────────────────────────────────╯{r}");
 
-    if let Ok(modified) = metadata.modified() {
-        if let Ok(age) = modified.elapsed() {
-            if age.as_secs() > STALE_THRESHOLD_SECS {
-                print!(
-                    "{}crustyclaw offline (stale){}",
-                    dim(use_color),
-                    reset(use_color)
-                );
-                return;
-            }
+    match load_status(status_path) {
+        None => {
+            print!("{top}\n{d}│{r}  ○ offline\n{bot}");
+        }
+        Some(s) => {
+            let uptime = format_uptime(&s);
+            let jobs = s.scheduler_job_count;
+            let job_label = if jobs == 1 { "job" } else { "jobs" };
+
+            let (status_color, status_text) =
+                if s.heartbeat_enabled && s.heartbeat_last_alert.is_some() {
+                    (yellow(c), "alert")
+                } else {
+                    (green(c), "live")
+                };
+
+            print!(
+                "{top}\n\
+                 {d}│{r} 💓 {uptime}  {d}│{r}  📋 {jobs} {job_label}  {d}│{r}  {status_color}● {status_text}{r}  📡\n\
+                 {bot}",
+            );
         }
     }
+    let _ = std::io::Write::flush(&mut std::io::stdout());
+}
 
-    let s = if let Ok(contents) = std::fs::read_to_string(status_path) {
-        if let Ok(parsed) = serde_json::from_str::<RuntimeStatus>(&contents) {
-            parsed
-        } else {
-            print!("{}crustyclaw offline{}", dim(use_color), reset(use_color));
-            return;
-        }
-    } else {
-        print!("{}crustyclaw offline{}", dim(use_color), reset(use_color));
-        return;
-    };
+fn load_status(path: &Path) -> Option<RuntimeStatus> {
+    let metadata = std::fs::metadata(path).ok()?;
+    let modified = metadata.modified().ok()?;
+    let age = modified.elapsed().ok()?;
+    if age.as_secs() > STALE_THRESHOLD_SECS {
+        return None;
+    }
+    let contents = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(&contents).ok()
+}
 
+fn format_uptime(s: &RuntimeStatus) -> String {
     let elapsed = Utc::now() - s.daemon_started_at;
     let total_secs = elapsed.num_seconds().max(0);
     let hours = total_secs / 3600;
     let minutes = (total_secs % 3600) / 60;
-    let uptime = if hours > 0 {
+    if hours > 0 {
         format!("{hours}h{minutes:02}m")
     } else {
         format!("{minutes}m")
-    };
-
-    let sid = s.session_id_short.as_deref().unwrap_or("\u{2014}");
-    let q = s.queue_depth;
-    let rejected = s.queue_full_rejections;
-
-    let hb = if s.heartbeat_enabled {
-        if s.heartbeat_last_alert.is_some() {
-            format!("{}\u{2661} alert{}", yellow(use_color), reset(use_color))
-        } else if s.heartbeat_last_ok.is_some() {
-            format!("{}\u{2661} ok{}", green(use_color), reset(use_color))
-        } else {
-            format!("{}\u{2661} waiting{}", yellow(use_color), reset(use_color))
-        }
-    } else {
-        format!("{}\u{2661} off{}", dim(use_color), reset(use_color))
-    };
-
-    let err_str = match &s.last_error {
-        Some(e) => {
-            let msg = truncate_str(&e.message, 80);
-            format!("{}err: {msg}{}", red(use_color), reset(use_color))
-        }
-        None => format!("{}err: none{}", green(use_color), reset(use_color)),
-    };
-
-    let rejected_str = if rejected > 0 {
-        format!(" {}(full\u{00d7}{rejected}){}", red(use_color), reset(use_color))
-    } else {
-        String::new()
-    };
-    print!(
-        "{}crustyclaw{} {}\u{25cf}{} {uptime} \u{2502} Q:{q}{rejected_str} \u{2502} s:{sid}\n\
-         {hb} \u{2502} \u{23f0} {} jobs \u{2502} inv:{} \u{2502} {err_str}",
-        bold_cyan(use_color),
-        reset(use_color),
-        green(use_color),
-        reset(use_color),
-        s.scheduler_job_count,
-        s.total_invocations,
-    );
-    let _ = std::io::Write::flush(&mut std::io::stdout());
-}
-
-fn is_stdout_tty() -> bool {
-    std::io::IsTerminal::is_terminal(&std::io::stdout())
+    }
 }
 
 fn dim(color: bool) -> &'static str {
     if color { "\x1b[90m" } else { "" }
 }
 fn green(color: bool) -> &'static str {
-    if color { "\x1b[32m" } else { "" }
+    if color { "\x1b[1;92m" } else { "" }
 }
 fn yellow(color: bool) -> &'static str {
-    if color { "\x1b[33m" } else { "" }
-}
-fn red(color: bool) -> &'static str {
-    if color { "\x1b[31m" } else { "" }
-}
-fn bold_cyan(color: bool) -> &'static str {
-    if color { "\x1b[1;36m" } else { "" }
+    if color { "\x1b[1;93m" } else { "" }
 }
 fn reset(color: bool) -> &'static str {
     if color { "\x1b[0m" } else { "" }

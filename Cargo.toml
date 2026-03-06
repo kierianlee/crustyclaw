@@ -23,6 +23,13 @@ uuid = { version = "1", features = ["v4", "v5", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 dirs = "6"
 libc = "0.2"
+axum = "0.8"
+tower-http = { version = "0.6", features = ["cors"] }
+rust-embed = "8"
+mime_guess = "2"
+specta = { version = "2.0.0-rc.23", features = ["derive", "chrono", "uuid"] }
+specta-typescript = "0.0.10"
+specta-serde = "0.0.10"
 
 [dev-dependencies]
 tempfile = "3.26.0"

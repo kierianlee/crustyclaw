@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Auto-start crustyclaw daemon on Claude Code session start.
+# Only starts if not already running and config exists.
+
+set -euo pipefail
+
+PLUGIN_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+BIN="${PLUGIN_ROOT}/bin/crustyclaw"
+
+if [ ! -x "$BIN" ]; then
+    exit 0
+fi
+
+# Check if config exists (setup has been run)
+DATA_DIR="${CRUSTYCLAW_DATA_DIR:-$HOME/.crustyclaw}"
+if [ ! -f "${DATA_DIR}/config.json" ]; then
+    exit 0
+fi
+
+# Check if daemon is already running
+if pgrep -f "crustyclaw$" >/dev/null 2>&1; then
+    exit 0
+fi
+
+# Start in background — strip CLAUDECODE so the daemon's child `claude`
+# processes don't think they're nested inside Claude Code.
+env -u CLAUDECODE nohup "$BIN" > /tmp/crustyclaw.log 2>&1 &

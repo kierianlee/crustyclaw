@@ -37,7 +37,7 @@ pub struct DaemonConfig {
     pub rate_limit_retry_secs: u64,
 
     // Heartbeat
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub heartbeat_enabled: bool,
     #[serde(default = "default_heartbeat_interval")]
     pub heartbeat_interval_secs: u64,
@@ -45,6 +45,12 @@ pub struct DaemonConfig {
     pub heartbeat_prompt: String,
     #[serde(default = "default_heartbeat_notify")]
     pub heartbeat_notify_telegram: bool,
+
+    // Web UI
+    #[serde(default = "default_true")]
+    pub web_enabled: bool,
+    #[serde(default = "default_web_port")]
+    pub web_port: u16,
 
     // Voice transcription
     #[serde(default)]
@@ -107,6 +113,10 @@ fn default_heartbeat_notify() -> bool {
 
 fn default_true() -> bool {
     true
+}
+
+fn default_web_port() -> u16 {
+    11111
 }
 
 fn default_approval_timeout() -> u64 {

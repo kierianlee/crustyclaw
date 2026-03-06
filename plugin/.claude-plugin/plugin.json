@@ -1,0 +1,11 @@
+{
+  "name": "crustyclaw",
+  "description": "Remote agent daemon for Claude Code — Telegram bot, scheduled jobs, heartbeat monitoring, and explicit permission approval",
+  "version": "0.1.0",
+  "author": {
+    "name": "Kierian"
+  },
+  "repository": "https://github.com/kierianlee/crustyclaw",
+  "license": "MIT",
+  "keywords": ["telegram", "daemon", "scheduler", "remote", "agent"]
+}

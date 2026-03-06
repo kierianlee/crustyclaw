@@ -11,6 +11,7 @@ mod permission;
 mod scheduler;
 mod setup;
 mod telegram;
+mod web;
 
 use common::{config, status, util};
 
@@ -68,11 +69,15 @@ async fn main() -> Result<()> {
             eprintln!("Error: hook-handler requires Unix (uses Unix domain sockets)");
             std::process::exit(1);
         }
+        Some("start") => {
+            return start_daemon().await;
+        }
         Some("help" | "--help" | "-h") => {
             eprintln!("Usage: crustyclaw [command]");
             eprintln!();
             eprintln!("Commands:");
-            eprintln!("  (none)         Start the daemon");
+            eprintln!("  (none)         Start the daemon (foreground)");
+            eprintln!("  start          Start the daemon (background)");
             eprintln!("  setup          Interactive first-time setup");
             eprintln!("  pair           Pair a new Telegram user");
             eprintln!("  statusline     Print daemon status (for shell integration)");
@@ -206,6 +211,15 @@ async fn main() -> Result<()> {
 
     let config = Arc::new(config);
 
+    let working_dir = config.effective_working_dir(&data_dir);
+
+    // Register statusLine in .claude/settings.json so Claude Code shows our status bar.
+    // Use CWD (the Claude Code project dir) rather than working_dir (which may be
+    // ~/.crustyclaw). When launched from Claude Code (plugin start or SessionStart hook),
+    // CWD is the project directory where Claude Code reads settings.
+    let statusline_dir = std::env::current_dir().unwrap_or_else(|_| working_dir.clone());
+    status::install_statusline(&statusline_dir);
+
     let status_tracker = Arc::new(status::StatusTracker::new(config.heartbeat_enabled));
     let status_writer_handle =
         status::spawn_writer(status_tracker.clone(), data_dir.join("status.json"));
@@ -214,10 +228,12 @@ async fn main() -> Result<()> {
     let (queue, queue_worker_handle) = claude::InvocationQueue::spawn(
         config.clone(),
         session.clone(),
-        data_dir_arc,
+        data_dir_arc.clone(),
         status_tracker.clone(),
     );
     let queue = Arc::new(queue);
+
+    let chat_log = Arc::new(common::chatlog::ChatLog::new());
 
     let shared_bot = Arc::new(tokio::sync::RwLock::new(
         telegram::make_bot(&config.telegram_token)?,
@@ -234,8 +250,6 @@ async fn main() -> Result<()> {
 
     #[cfg(unix)]
     let (permission_server, permission_handle) = if config.telegram_approval {
-        let working_dir = config.effective_working_dir(&data_dir);
-
         // Auto-install the hook into {working_dir}/.claude/settings.json.
         // Uses absolute binary path and is loaded via --settings, so it's
         // scoped to the crustyclaw subprocess only.
@@ -293,6 +307,19 @@ async fn main() -> Result<()> {
             status_tracker.clone(),
         );
 
+    let web_handle = if config.web_enabled {
+        Some(web::spawn(
+            config.web_port,
+            status_tracker.clone(),
+            scheduler.clone(),
+            chat_log.clone(),
+            config.clone(),
+            data_dir_arc.clone(),
+        ))
+    } else {
+        None
+    };
+
     let telegram_handle = telegram::spawn(
         config.clone(),
         queue.clone(),
@@ -301,6 +328,7 @@ async fn main() -> Result<()> {
         data_dir,
         shared_bot,
         permission_server.clone(),
+        chat_log,
     );
 
     tracing::info!("All subsystems started. Waiting for shutdown signal...");
@@ -349,6 +377,18 @@ async fn main() -> Result<()> {
                 Err(e) => tracing::error!(error = %e, "Status writer panicked"),
             }
         }
+        result = async {
+            if let Some(h) = web_handle {
+                h.await
+            } else {
+                std::future::pending().await
+            }
+        } => {
+            match result {
+                Ok(()) => tracing::warn!("Web server exited unexpectedly"),
+                Err(e) => tracing::error!(error = %e, "Web server panicked"),
+            }
+        }
     }
 
     tracing::info!("Shutting down gracefully — waiting for in-flight requests...");
@@ -365,8 +405,56 @@ async fn main() -> Result<()> {
     }
 
     status::flush_final(&status_tracker, &status_path).await;
+    status::remove_statusline(&statusline_dir);
 
     tracing::info!("Shutdown complete");
+    Ok(())
+}
+
+/// Launch the daemon as a detached background process and exit.
+async fn start_daemon() -> Result<()> {
+    let data_dir = config::data_dir();
+
+    // Check config exists
+    let config_path = config::config_path(&data_dir);
+    if !config_path.exists() {
+        anyhow::bail!("No config found. Run `crustyclaw setup` first.");
+    }
+
+    // Check if already running via lock file
+    let lock_path = data_dir.join("daemon.lock");
+    if lock_path.exists() {
+        if let Ok(f) = std::fs::File::open(&lock_path) {
+            if f.try_lock().is_err() {
+                eprintln!("crustyclaw is already running");
+                return Ok(());
+            }
+        }
+    }
+
+    let exe = std::env::current_exe()?;
+    let log = std::fs::File::create("/tmp/crustyclaw.log")?;
+
+    let mut cmd = std::process::Command::new(&exe);
+    cmd.env_remove("CLAUDECODE");
+    cmd.stdin(std::process::Stdio::null());
+    cmd.stdout(log.try_clone()?);
+    cmd.stderr(log);
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        // Safety: setsid is async-signal-safe and we call no other functions.
+        unsafe {
+            cmd.pre_exec(|| {
+                libc::setsid();
+                Ok(())
+            });
+        }
+    }
+
+    let child = cmd.spawn()?;
+    eprintln!("crustyclaw started (pid: {})", child.id());
     Ok(())
 }
 
