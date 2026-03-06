@@ -1,0 +1,21 @@
+services:
+  crustyclaw:
+    build: .
+    container_name: crustyclaw
+    restart: unless-stopped
+    volumes:
+      # OAuth tokens — MUST be read-write so Claude CLI can refresh expired tokens.
+      - ${HOME}/.claude:/home/crustyclaw/.claude:rw
+      # Daemon config and data (config.json, session.json, scheduler.json, inbox/).
+      - ${HOME}/.crustyclaw:/home/crustyclaw/.crustyclaw:rw
+    # Pass through CRUSTYCLAW_* env vars from .env (create from .env.example).
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      - RUST_LOG=info
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
