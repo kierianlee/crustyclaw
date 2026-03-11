@@ -17,7 +17,7 @@ use crate::common::config::DaemonConfig;
 use crate::common::util::{short_id, truncate_str};
 #[cfg(unix)]
 use crate::permission::PermissionServer;
-use crate::scheduler::{JobAction, Scheduler};
+use crate::scheduler::{JobAction, JobRecord, Scheduler};
 
 /// RAII guard that aborts a spawned task on drop, preventing leaks if the
 /// caller panics or returns early.
@@ -544,8 +544,8 @@ async fn handle_command(ctx: &HandlerCtx<'_>, chat_id: i64, is_admin: bool, text
         .next()
         .unwrap_or("");
 
-    // Admin-only commands: /stop, /reset, /schedule, /jobs, /unschedule.
-    if matches!(cmd, "/stop" | "/reset" | "/schedule" | "/jobs" | "/unschedule") && !is_admin {
+    // Admin-only commands: /stop, /reset, /schedule, /jobs, /unschedule, /editjob.
+    if matches!(cmd, "/stop" | "/reset" | "/schedule" | "/jobs" | "/unschedule" | "/editjob") && !is_admin {
         let _ = send_text(bot, chat_id, "This command is restricted to the admin.").await;
         return;
     }
@@ -612,6 +612,9 @@ async fn handle_command(ctx: &HandlerCtx<'_>, chat_id: i64, is_admin: bool, text
         }
         "/unschedule" => {
             handle_unschedule(bot, chat_id, text, scheduler).await;
+        }
+        "/editjob" => {
+            handle_editjob(bot, chat_id, text, queue, scheduler).await;
         }
         _ => {
             let _ = send_text(
@@ -999,6 +1002,167 @@ async fn handle_unschedule(bot: &Bot, chat_id: i64, text: &str, scheduler: &Arc<
             .await;
         }
     }
+}
+
+/// `/editjob <name-or-id> <new description>` — update a scheduled job.
+///
+/// Shows current job details if only name/id is given.
+/// If a new description follows, re-parses it via Claude and updates the job.
+async fn handle_editjob(
+    bot: &Bot,
+    chat_id: i64,
+    text: &str,
+    queue: &InvocationQueue,
+    scheduler: &Arc<Scheduler>,
+) {
+    let args = text
+        .split_once(char::is_whitespace)
+        .map_or("", |(_, rest)| rest)
+        .trim();
+
+    if args.is_empty() {
+        let _ = send_text(
+            bot,
+            chat_id,
+            "Usage: /editjob <name or id> [new description]\n\n\
+             Without a description, shows the current job details.\n\
+             With a description, updates the job's schedule and/or prompt.",
+        )
+        .await;
+        return;
+    }
+
+    let jobs = scheduler.list_jobs().await;
+
+    // Try to split into "query" and "new description".
+    // First try matching the longest prefix that identifies a job.
+    let (job, new_desc) = match find_job_and_description(args, &jobs) {
+        Some(result) => result,
+        None => {
+            let _ = send_text(bot, chat_id, &format!("No job found matching '{args}'.")).await;
+            return;
+        }
+    };
+
+    if new_desc.is_empty() {
+        // Show current job details
+        let action_desc = match &job.action {
+            JobAction::ClaudePrompt { prompt, .. } => format!("Type: Claude prompt\nPrompt: {prompt}"),
+            JobAction::TelegramMessage { text, .. } => format!("Type: Telegram message\nText: {text}"),
+            JobAction::TelegramAdmin { text } => format!("Type: Admin message\nText: {text}"),
+        };
+        let _ = send_text(
+            bot,
+            chat_id,
+            &format!(
+                "📋 {name}\nID: {id}\nCron: {cron}\n{action_desc}\n\n\
+                 To update, send:\n/editjob {name} <new description>",
+                name = job.name,
+                id = short_id(job.stable_id),
+                cron = job.cron_expression,
+            ),
+        )
+        .await;
+        return;
+    }
+
+    // Parse the new description via Claude
+    let _ = send_text(bot, chat_id, "Parsing updated schedule...").await;
+
+    let parsed = match parse_schedule_with_claude(new_desc, queue, bot, chat_id).await {
+        Ok(p) => p,
+        Err(e) => {
+            let _ = send_text(bot, chat_id, &format!("Failed to parse: {e}")).await;
+            return;
+        }
+    };
+
+    // Validate cron (same checks as handle_schedule)
+    if !parsed
+        .cron
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, ' ' | '*' | '/' | '-' | ',' | '?'))
+    {
+        let _ = send_text(bot, chat_id, "Rejected — cron contains invalid characters.").await;
+        return;
+    }
+
+    let cron_fields: Vec<&str> = parsed.cron.split_whitespace().collect();
+    if cron_fields.len() != 7 {
+        let _ = send_text(
+            bot,
+            chat_id,
+            &format!("Invalid cron (expected 7 fields, got {})", cron_fields.len()),
+        )
+        .await;
+        return;
+    }
+    if cron_fields[0] != "0" {
+        let _ = send_text(bot, chat_id, "Seconds field must be 0.").await;
+        return;
+    }
+    if cron_fires_too_often(cron_fields[1]) {
+        let _ = send_text(bot, chat_id, "Schedule rejected — fires too often (< 5 min).").await;
+        return;
+    }
+
+    let new_action = JobAction::ClaudePrompt {
+        prompt: truncate_str(&parsed.prompt, 500).to_string(),
+        chat_id,
+    };
+
+    match scheduler
+        .update_job(job.stable_id, Some(parsed.cron), Some(new_action))
+        .await
+    {
+        Ok(()) => {
+            let _ = send_text(
+                bot,
+                chat_id,
+                &format!("Updated job '{}'.", job.name),
+            )
+            .await;
+        }
+        Err(e) => {
+            let _ = send_text(bot, chat_id, &format!("Failed to update: {e}")).await;
+        }
+    }
+}
+
+/// Match a job name/id prefix from the beginning of `args`, return the job and remaining text.
+fn find_job_and_description<'a>(
+    args: &'a str,
+    jobs: &[JobRecord],
+) -> Option<(JobRecord, &'a str)> {
+    // Try exact name match first (greedy: longest name wins)
+    let mut best_name_match: Option<(&JobRecord, usize)> = None;
+    for job in jobs {
+        if args.starts_with(&job.name) {
+            let is_boundary = args.len() == job.name.len()
+                || args.as_bytes().get(job.name.len()).map_or(true, |b| b.is_ascii_whitespace());
+            if is_boundary {
+                if best_name_match.map_or(true, |(_, len)| job.name.len() > len) {
+                    best_name_match = Some((job, job.name.len()));
+                }
+            }
+        }
+    }
+    if let Some((job, len)) = best_name_match {
+        return Some((job.clone(), args[len..].trim()));
+    }
+
+    // Try UUID prefix match on first word
+    let first_word = args.split_whitespace().next().unwrap_or(args);
+    let rest = args[first_word.len()..].trim();
+    let matches: Vec<_> = jobs
+        .iter()
+        .filter(|j| j.stable_id.to_string().starts_with(first_word))
+        .collect();
+    if matches.len() == 1 {
+        return Some((matches[0].clone(), rest));
+    }
+
+    None
 }
 
 /// Download the largest available photo from a Telegram message.

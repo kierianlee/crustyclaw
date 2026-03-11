@@ -231,6 +231,61 @@ impl Scheduler {
         self.persist_state().await
     }
 
+    /// Update an existing job's cron expression and/or action.
+    /// Removes the old cron job and re-registers with the same stable_id.
+    pub async fn update_job(
+        self: &Arc<Self>,
+        stable_id: Uuid,
+        cron: Option<String>,
+        action: Option<JobAction>,
+    ) -> Result<()> {
+        let mut jobs = self.jobs.write().await;
+        let record = jobs
+            .get(&stable_id)
+            .ok_or_else(|| anyhow::anyhow!("Job not found"))?
+            .clone();
+
+        let internal_id = record
+            .id
+            .ok_or_else(|| anyhow::anyhow!("Job is still initializing"))?;
+
+        let new_cron = cron.as_deref().unwrap_or(&record.cron_expression);
+        let new_action = action.as_ref().unwrap_or(&record.action);
+
+        // Create the new cron job before removing the old one
+        let new_job = self.make_cron_job(new_cron, new_action.clone(), record.name.clone())?;
+
+        // Remove old job from scheduler
+        self.sched
+            .remove(&internal_id)
+            .await
+            .context("Failed to remove old job from scheduler")?;
+
+        // Add new job to scheduler
+        let new_internal_id = self
+            .sched
+            .add(new_job)
+            .await
+            .map_err(|e| anyhow::Error::new(e).context("Failed to add updated job to scheduler"))?;
+
+        // Update the record in-place, keeping the same stable_id and name
+        jobs.insert(
+            stable_id,
+            JobRecord {
+                id: Some(new_internal_id),
+                stable_id,
+                name: record.name,
+                cron_expression: new_cron.to_string(),
+                action: new_action.clone(),
+                one_shot: false,
+            },
+        );
+        drop(jobs);
+
+        self.persist_state().await?;
+        Ok(())
+    }
+
     pub async fn list_jobs(&self) -> Vec<JobRecord> {
         let mut jobs: Vec<JobRecord> = self.jobs.read().await.values().cloned().collect();
         jobs.sort_by(|a, b| a.name.cmp(&b.name));

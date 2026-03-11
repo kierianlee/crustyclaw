@@ -68,6 +68,7 @@ pub fn spawn(
         .route("/jobs", get(api_list_jobs))
         .route("/jobs", post(api_create_job))
         .route("/jobs/{id}", delete(api_delete_job))
+        .route("/jobs/{id}", put(api_update_job))
         .route("/soul", get(api_get_soul))
         .route("/soul", put(api_put_soul));
 
@@ -176,6 +177,34 @@ async fn api_create_job(
         .await
     {
         Ok(id) => Ok(Json(serde_json::json!({ "id": id }))),
+        Err(e) => Err((StatusCode::BAD_REQUEST, e.to_string())),
+    }
+}
+
+#[derive(Deserialize)]
+struct UpdateJobRequest {
+    #[serde(default)]
+    cron_expression: Option<String>,
+    #[serde(flatten)]
+    action_input: Option<JobActionInput>,
+}
+
+async fn api_update_job(
+    State(state): State<Arc<WebState>>,
+    axum::extract::Path(id): axum::extract::Path<uuid::Uuid>,
+    Json(body): Json<UpdateJobRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let admin = state.config.admin_chat_id;
+    let action = body.action_input.map(|a| match a {
+        JobActionInput::ClaudePrompt { prompt } => {
+            crate::scheduler::JobAction::ClaudePrompt { prompt, chat_id: admin }
+        }
+        JobActionInput::TelegramMessage { text } => {
+            crate::scheduler::JobAction::TelegramAdmin { text }
+        }
+    });
+    match state.scheduler.update_job(id, body.cron_expression, action).await {
+        Ok(()) => Ok(Json(serde_json::json!({ "ok": true }))),
         Err(e) => Err((StatusCode::BAD_REQUEST, e.to_string())),
     }
 }

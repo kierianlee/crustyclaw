@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
-import { Trash2, Plus } from "lucide-react";
+import { Trash2, Plus, Pencil } from "lucide-react";
 import {
   Table,
   TableHeader,
@@ -93,14 +93,17 @@ function JobsPage() {
                       </Badge>
                     </TableCell>
                     <TableCell>
-                      <Button
-                        variant="ghost"
-                        size="icon-xs"
-                        onClick={() => deleteMutation.mutate(job.stable_id)}
-                        disabled={deleteMutation.isPending}
-                      >
-                        <Trash2 />
-                      </Button>
+                      <div className="flex gap-1">
+                        <EditJobDialog job={job} />
+                        <Button
+                          variant="ghost"
+                          size="icon-xs"
+                          onClick={() => deleteMutation.mutate(job.stable_id)}
+                          disabled={deleteMutation.isPending}
+                        >
+                          <Trash2 />
+                        </Button>
+                      </div>
                     </TableCell>
                   </TableRow>
                 ))}
@@ -323,29 +326,161 @@ function ScheduleBuilder({ onChange }: { onChange: (cron: string) => void }) {
   );
 }
 
+type ActionType = "claude_prompt" | "telegram_message";
+
+function ActionFields({
+  actionType,
+  onActionTypeChange,
+  body,
+  onBodyChange,
+}: {
+  actionType: ActionType;
+  onActionTypeChange: (t: ActionType) => void;
+  body: string;
+  onBodyChange: (b: string) => void;
+}) {
+  return (
+    <>
+      <select
+        className="w-full rounded-lg border bg-background px-3 py-2 text-sm"
+        value={actionType}
+        onChange={(e) => onActionTypeChange(e.target.value as ActionType)}
+      >
+        <option value="claude_prompt">Claude Prompt</option>
+        <option value="telegram_message">Send Message</option>
+      </select>
+      <Textarea
+        placeholder={
+          actionType === "claude_prompt"
+            ? "What should Claude do?"
+            : "Message text"
+        }
+        value={body}
+        onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) =>
+          onBodyChange(e.target.value)
+        }
+        rows={3}
+      />
+    </>
+  );
+}
+
+function buildPayload(actionType: ActionType, body: string, cron: string, name?: string) {
+  const payload: Record<string, unknown> = {
+    cron_expression: cron,
+    type: actionType,
+  };
+  if (name !== undefined) payload.name = name;
+  if (actionType === "claude_prompt") payload.prompt = body;
+  else payload.text = body;
+  return payload;
+}
+
+function EditJobDialog({ job }: { job: JobRecord }) {
+  const queryClient = useQueryClient();
+  const [open, setOpen] = useState(false);
+  const [useBuilder, setUseBuilder] = useState(false);
+  const [cron, setCron] = useState(job.cron_expression);
+  const [actionType, setActionType] = useState<ActionType>(
+    job.action.type as ActionType,
+  );
+  const [body, setBody] = useState(
+    "prompt" in job.action ? job.action.prompt : "text" in job.action ? job.action.text : "",
+  );
+
+  const mutation = useMutation({
+    mutationFn: async () => {
+      const res = await fetch(`/api/jobs/${job.stable_id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(buildPayload(actionType, body, cron)),
+      });
+      if (!res.ok) throw new Error(await res.text());
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      setOpen(false);
+    },
+  });
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger
+        render={
+          <Button variant="ghost" size="icon-xs">
+            <Pencil />
+          </Button>
+        }
+      />
+      <DialogPopup>
+        <DialogHeader>
+          <DialogTitle>Edit: {job.name}</DialogTitle>
+          <DialogDescription>Update the schedule or action.</DialogDescription>
+        </DialogHeader>
+        <DialogPanel>
+          <div className="space-y-4">
+            {useBuilder ? (
+              <ScheduleBuilder onChange={setCron} />
+            ) : (
+              <div>
+                <label className="text-sm font-medium mb-1.5 block">Schedule</label>
+                <Input
+                  value={cron}
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                    setCron(e.target.value)
+                  }
+                  className="font-mono text-xs"
+                />
+              </div>
+            )}
+            <button
+              type="button"
+              className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+              onClick={() => setUseBuilder(!useBuilder)}
+            >
+              {useBuilder ? "Edit cron directly" : "Use schedule builder"}
+            </button>
+            <ActionFields
+              actionType={actionType}
+              onActionTypeChange={setActionType}
+              body={body}
+              onBodyChange={setBody}
+            />
+            {mutation.error && (
+              <p className="text-destructive-foreground text-sm">
+                {(mutation.error as Error).message}
+              </p>
+            )}
+          </div>
+        </DialogPanel>
+        <DialogFooter variant="bare">
+          <DialogClose render={<Button variant="outline">Cancel</Button>} />
+          <Button
+            onClick={() => mutation.mutate()}
+            disabled={mutation.isPending || !body}
+          >
+            {mutation.isPending ? "Saving..." : "Save"}
+          </Button>
+        </DialogFooter>
+      </DialogPopup>
+    </Dialog>
+  );
+}
+
 function CreateJobDialog() {
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [cron, setCron] = useState("");
-  const [actionType, setActionType] = useState<
-    "claude_prompt" | "telegram_message"
-  >("claude_prompt");
+  const [actionType, setActionType] = useState<ActionType>("claude_prompt");
   const [body, setBody] = useState("");
 
   const mutation = useMutation({
     mutationFn: async () => {
-      const payload: Record<string, unknown> = {
-        name,
-        cron_expression: cron,
-        type: actionType,
-      };
-      if (actionType === "claude_prompt") payload.prompt = body;
-      else payload.text = body;
       const res = await fetch("/api/jobs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+        body: JSON.stringify(buildPayload(actionType, body, cron, name)),
       });
       if (!res.ok) throw new Error(await res.text());
     },
@@ -381,29 +516,11 @@ function CreateJobDialog() {
               }
             />
             <ScheduleBuilder onChange={setCron} />
-            <select
-              className="w-full rounded-lg border bg-background px-3 py-2 text-sm"
-              value={actionType}
-              onChange={(e) =>
-                setActionType(
-                  e.target.value as "claude_prompt" | "telegram_message",
-                )
-              }
-            >
-              <option value="claude_prompt">Claude Prompt</option>
-              <option value="telegram_message">Send Message</option>
-            </select>
-            <Textarea
-              placeholder={
-                actionType === "claude_prompt"
-                  ? "What should Claude do?"
-                  : "Message text"
-              }
-              value={body}
-              onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) =>
-                setBody(e.target.value)
-              }
-              rows={3}
+            <ActionFields
+              actionType={actionType}
+              onActionTypeChange={setActionType}
+              body={body}
+              onBodyChange={setBody}
             />
             {mutation.error && (
               <p className="text-destructive-foreground text-sm">
