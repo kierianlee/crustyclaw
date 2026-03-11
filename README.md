@@ -89,20 +89,17 @@ There are **3 ways** to run crustyclaw:
 
 The plugin auto-starts the daemon when you open a Claude Code session and stops it when you close. No manual intervention needed.
 
-> **Note:** Official plugin marketplace submission is in progress. In the meantime, clone the repo and build locally. You'll need [Rust 1.89+](https://rustup.rs/) installed.
+**Install from the marketplace:**
 
-```bash
-git clone https://github.com/kierianlee/crustyclaw.git
-cd crustyclaw
-
-# Build the binary and copy it into the plugin directory
-./plugin/scripts/build-plugin.sh
-
-# Launch Claude Code with the plugin loaded
-claude --plugin-dir ./plugin
+```
+/plugin marketplace add kierianlee/crustyclaw
+/plugin install crustyclaw@crustyclaw
+/reload-plugins
 ```
 
-Once inside Claude Code, run `/crustyclaw:setup` to configure your Telegram bot and pair your account. That's it — the daemon starts automatically from now on.
+Then run `/crustyclaw:setup` to configure your Telegram bot and pair your account. That's it — the daemon starts automatically from now on.
+
+> **Building from source?** Clone the repo, run `./build.sh` (requires [Rust 1.89+](https://rustup.rs/) and [Bun](https://bun.sh)), then `claude --plugin-dir ./plugin`.
 
 #### Plugin Commands
 

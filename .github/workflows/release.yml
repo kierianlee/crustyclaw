@@ -62,11 +62,14 @@ jobs:
           jq '.version = "${{ steps.next.outputs.version }}"' web/package.json > tmp.json
           mv tmp.json web/package.json
 
+      - name: Update Cargo.lock
+        run: sed -i "/^name = \"crustyclaw\"/{n;s/^version = \".*\"/version = \"${{ steps.next.outputs.version }}\"/}" Cargo.lock
+
       - name: Commit and tag
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Cargo.toml plugin/.claude-plugin/plugin.json .claude-plugin/marketplace.json web/package.json
+          git add Cargo.toml Cargo.lock plugin/.claude-plugin/plugin.json .claude-plugin/marketplace.json web/package.json
           git commit -m "release: v${{ steps.next.outputs.version }}"
           git tag "v${{ steps.next.outputs.version }}"
           git push origin main --tags
