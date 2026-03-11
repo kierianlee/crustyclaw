@@ -3,16 +3,8 @@ description: Stop the crustyclaw daemon gracefully
 disable-model-invocation: true
 ---
 
-Stop the crustyclaw daemon by sending SIGTERM to the running process:
+Stop the crustyclaw daemon gracefully and report the output:
 
 ```bash
-pkill -TERM -f "crustyclaw$" 2>/dev/null || echo "No crustyclaw process found"
+CC_BIN="${HOME}/.crustyclaw/bin/crustyclaw"; [ -x "$CC_BIN" ] || CC_BIN="${CLAUDE_PLUGIN_ROOT}/bin/crustyclaw"; "$CC_BIN" stop
 ```
-
-Wait 2 seconds, then verify it stopped:
-
-```bash
-CC_BIN="${HOME}/.crustyclaw/bin/crustyclaw"; [ -x "$CC_BIN" ] || CC_BIN="${CLAUDE_PLUGIN_ROOT}/bin/crustyclaw"; "$CC_BIN" statusline
-```
-
-Report whether the daemon stopped successfully.

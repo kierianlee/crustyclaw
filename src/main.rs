@@ -77,12 +77,27 @@ async fn main() -> Result<()> {
         Some("start") => {
             return start_daemon().await;
         }
+        Some("stop") => {
+            if is_daemon_running() {
+                signal_stop();
+                eprintln!("Sent stop signal to crustyclaw daemon");
+            } else {
+                eprintln!("No crustyclaw daemon is running");
+            }
+            return Ok(());
+        }
+        Some("register-statusline") => {
+            let data_dir = config::data_dir();
+            status::install_statusline(&data_dir);
+            return Ok(());
+        }
         Some("help" | "--help" | "-h") => {
             eprintln!("Usage: crustyclaw [command]");
             eprintln!();
             eprintln!("Commands:");
             eprintln!("  (none)         Start the daemon (foreground)");
             eprintln!("  start          Start the daemon (background)");
+            eprintln!("  stop           Stop the running daemon");
             eprintln!("  setup          Interactive first-time setup");
             eprintln!("                   --token <T>    Provide bot token non-interactively");
             eprintln!("                   --yes          Auto-confirm overwrites");
