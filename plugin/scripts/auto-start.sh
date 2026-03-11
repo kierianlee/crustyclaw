@@ -7,6 +7,11 @@ set -euo pipefail
 PLUGIN_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BIN="${PLUGIN_ROOT}/bin/crustyclaw"
 
+# Download binary from GitHub releases if not present
+if [ ! -x "$BIN" ]; then
+    "${PLUGIN_ROOT}/scripts/install-binary.sh" 2>/dev/null || exit 0
+fi
+
 if [ ! -x "$BIN" ]; then
     exit 0
 fi

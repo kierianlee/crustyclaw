@@ -4,6 +4,14 @@ description: Run crustyclaw setup (Claude auth + Telegram bot configuration)
 
 Run the crustyclaw setup wizard. Since Claude Code's terminal doesn't support interactive stdin, orchestrate the setup conversationally by collecting values from the user and passing them as CLI flags.
 
+## Step 0: Ensure binary is installed
+
+```bash
+"${CLAUDE_PLUGIN_ROOT}/scripts/install-binary.sh"
+```
+
+If this fails, tell the user to build from source with `./build.sh` in the crustyclaw repo.
+
 ## Step 1: Check Claude authentication
 
 ```bash

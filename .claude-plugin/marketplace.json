@@ -1,0 +1,25 @@
+{
+  "name": "crustyclaw",
+  "owner": {
+    "name": "Kierian",
+    "email": "kierian@mad.gg"
+  },
+  "metadata": {
+    "description": "Remote agent daemon for Claude Code — control Claude via Telegram, schedule jobs, approve tool calls remotely"
+  },
+  "plugins": [
+    {
+      "name": "crustyclaw",
+      "source": "./plugin",
+      "description": "Remote agent daemon for Claude Code — Telegram bot, scheduled jobs, heartbeat monitoring, and explicit permission approval",
+      "version": "0.0.0",
+      "author": {
+        "name": "Kierian"
+      },
+      "repository": "https://github.com/kierianlee/crustyclaw",
+      "license": "MIT",
+      "keywords": ["telegram", "daemon", "scheduler", "remote", "agent"],
+      "category": "automation"
+    }
+  ]
+}

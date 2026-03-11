@@ -1,6 +1,6 @@
 [package]
 name = "crustyclaw"
-version = "0.1.0"
+version = "0.0.0"
 edition = "2021"
 rust-version = "1.89"
 description = "Remote agent daemon for Claude Code"
@@ -30,6 +30,13 @@ mime_guess = "2"
 specta = { version = "2.0.0-rc.23", features = ["derive", "chrono", "uuid"] }
 specta-typescript = "0.0.10"
 specta-serde = "0.0.10"
+
+[features]
+openssl-vendored = ["openssl-sys/vendored"]
+
+[dependencies.openssl-sys]
+version = "0.9"
+optional = true
 
 [dev-dependencies]
 tempfile = "3.26.0"
