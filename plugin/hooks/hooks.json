@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "CC_BIN=\"${HOME}/.crustyclaw/bin/crustyclaw\"; [ -x \"$CC_BIN\" ] && \"$CC_BIN\" stop 2>/dev/null; true",
+            "command": "CC_BIN=\"${HOME}/.crustyclaw/bin/crustyclaw\"; [ -x \"$CC_BIN\" ] && \"$CC_BIN\" stop",
             "timeout": 5000
           }
         ]

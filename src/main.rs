@@ -86,11 +86,6 @@ async fn main() -> Result<()> {
             }
             return Ok(());
         }
-        Some("register-statusline") => {
-            let data_dir = config::data_dir();
-            status::install_statusline(&data_dir);
-            return Ok(());
-        }
         Some("help" | "--help" | "-h") => {
             eprintln!("Usage: crustyclaw [command]");
             eprintln!();
@@ -505,7 +500,13 @@ async fn run_update() -> Result<()> {
     if was_running {
         eprintln!("Stopping daemon for update...");
         signal_stop();
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        // Wait for the daemon to release its lock (up to 5s).
+        for _ in 0..50 {
+            if !is_daemon_running() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
     }
 
     let status = std::process::Command::new("bash")

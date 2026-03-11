@@ -168,6 +168,9 @@ fn global_claude_settings_path() -> Option<PathBuf> {
 
 /// Write the `statusLine` entry into `~/.claude/settings.json`
 /// so Claude Code displays our status bar globally.
+///
+/// Uses the stable binary path at `~/.crustyclaw/bin/crustyclaw` which is
+/// placed by `install-binary.sh` and survives plugin cache version bumps.
 pub fn install_statusline(data_dir: &Path) {
     let settings_path = match global_claude_settings_path() {
         Some(p) => p,
@@ -179,23 +182,31 @@ pub fn install_statusline(data_dir: &Path) {
         Err(_) => serde_json::json!({}),
     };
 
-    // Use a stable symlink in the data dir so the statusline survives plugin
-    // version updates (the plugin cache path changes on each version bump).
-    let stable_bin = match install_stable_symlink(data_dir) {
-        Some(p) => p,
-        None => return,
-    };
+    let stable_bin = data_dir.join("bin").join("crustyclaw");
+    if !stable_bin.exists() {
+        tracing::warn!(path = %stable_bin.display(), "Stable binary not found, skipping statusline");
+        return;
+    }
     let escaped = stable_bin.display().to_string().replace('\'', "'\\''");
     let command = format!("'{escaped}' statusline");
+
+    let entry = serde_json::json!({
+        "type": "command",
+        "command": command,
+        "refresh": 5
+    });
+
+    // Skip rewrite if the entry already matches — avoids unnecessary
+    // ConfigChange hook triggers in Claude Code on every daemon start.
+    if settings.get("statusLine") == Some(&entry) {
+        tracing::debug!("statusLine already up to date");
+        return;
+    }
 
     settings
         .as_object_mut()
         .unwrap()
-        .insert("statusLine".into(), serde_json::json!({
-            "type": "command",
-            "command": command,
-            "refresh": 5
-        }));
+        .insert("statusLine".into(), entry);
 
     let json = match serde_json::to_string_pretty(&settings) {
         Ok(j) => j,
@@ -210,43 +221,6 @@ pub fn install_statusline(data_dir: &Path) {
     } else {
         tracing::info!(path = %settings_path.display(), "Installed statusLine");
     }
-}
-
-/// Create/update a stable symlink at `{data_dir}/bin/crustyclaw` pointing to
-/// the current exe. Returns the stable path on success.
-fn install_stable_symlink(data_dir: &Path) -> Option<PathBuf> {
-    let exe_path = match std::env::current_exe() {
-        Ok(p) => p,
-        Err(e) => {
-            tracing::warn!(error = %e, "Cannot determine binary path for statusline");
-            return None;
-        }
-    };
-
-    let bin_dir = data_dir.join("bin");
-    if let Err(e) = std::fs::create_dir_all(&bin_dir) {
-        tracing::warn!(error = %e, "Failed to create bin dir for stable symlink");
-        return None;
-    }
-
-    let stable_path = bin_dir.join("crustyclaw");
-
-    // Remove existing symlink/file before creating a new one.
-    let _ = std::fs::remove_file(&stable_path);
-
-    #[cfg(unix)]
-    if let Err(e) = std::os::unix::fs::symlink(&exe_path, &stable_path) {
-        tracing::warn!(error = %e, "Failed to create stable symlink");
-        return None;
-    }
-
-    #[cfg(not(unix))]
-    if let Err(e) = std::fs::copy(&exe_path, &stable_path) {
-        tracing::warn!(error = %e, "Failed to copy binary to stable path");
-        return None;
-    }
-
-    Some(stable_path)
 }
 
 /// Remove the `statusLine` entry from the global `~/.claude/settings.json`.
