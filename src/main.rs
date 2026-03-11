@@ -247,7 +247,7 @@ async fn main() -> Result<()> {
     // ~/.crustyclaw). When started via /crustyclaw:start, CWD is the project directory
     // where Claude Code reads settings.
     let statusline_dir = std::env::current_dir().unwrap_or_else(|_| working_dir.clone());
-    status::install_statusline(&statusline_dir);
+    status::install_statusline(&statusline_dir, &data_dir);
 
     let status_tracker = Arc::new(status::StatusTracker::new(config.heartbeat_enabled));
     let status_writer_handle =

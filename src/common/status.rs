@@ -158,7 +158,7 @@ pub fn spawn_writer(tracker: Arc<StatusTracker>, path: PathBuf) -> JoinHandle<()
 /// Write the `statusLine` entry into `{working_dir}/.claude/settings.json`
 /// so Claude Code displays our status bar. Uses the absolute path to the
 /// running binary, like ClaudeClaw does.
-pub fn install_statusline(working_dir: &Path) {
+pub fn install_statusline(working_dir: &Path, data_dir: &Path) {
     let claude_dir = working_dir.join(".claude");
     if let Err(e) = std::fs::create_dir_all(&claude_dir) {
         tracing::warn!(error = %e, "Failed to create .claude dir for statusline");
@@ -172,14 +172,13 @@ pub fn install_statusline(working_dir: &Path) {
         Err(_) => serde_json::json!({}),
     };
 
-    let exe_path = match std::env::current_exe() {
-        Ok(p) => p,
-        Err(e) => {
-            tracing::warn!(error = %e, "Cannot determine binary path for statusline");
-            return;
-        }
+    // Use a stable symlink in the data dir so the statusline survives plugin
+    // version updates (the plugin cache path changes on each version bump).
+    let stable_bin = match install_stable_symlink(data_dir) {
+        Some(p) => p,
+        None => return,
     };
-    let escaped = exe_path.display().to_string().replace('\'', "'\\''");
+    let escaped = stable_bin.display().to_string().replace('\'', "'\\''");
     let command = format!("'{escaped}' statusline");
 
     settings
@@ -204,6 +203,43 @@ pub fn install_statusline(working_dir: &Path) {
     } else {
         tracing::info!(path = %settings_path.display(), "Installed statusLine");
     }
+}
+
+/// Create/update a stable symlink at `{data_dir}/bin/crustyclaw` pointing to
+/// the current exe. Returns the stable path on success.
+fn install_stable_symlink(data_dir: &Path) -> Option<PathBuf> {
+    let exe_path = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!(error = %e, "Cannot determine binary path for statusline");
+            return None;
+        }
+    };
+
+    let bin_dir = data_dir.join("bin");
+    if let Err(e) = std::fs::create_dir_all(&bin_dir) {
+        tracing::warn!(error = %e, "Failed to create bin dir for stable symlink");
+        return None;
+    }
+
+    let stable_path = bin_dir.join("crustyclaw");
+
+    // Remove existing symlink/file before creating a new one.
+    let _ = std::fs::remove_file(&stable_path);
+
+    #[cfg(unix)]
+    if let Err(e) = std::os::unix::fs::symlink(&exe_path, &stable_path) {
+        tracing::warn!(error = %e, "Failed to create stable symlink");
+        return None;
+    }
+
+    #[cfg(not(unix))]
+    if let Err(e) = std::fs::copy(&exe_path, &stable_path) {
+        tracing::warn!(error = %e, "Failed to copy binary to stable path");
+        return None;
+    }
+
+    Some(stable_path)
 }
 
 /// Remove the `statusLine` entry from `{working_dir}/.claude/settings.json`.
@@ -279,7 +315,7 @@ pub fn print_statusline(status_path: &Path) {
 }
 
 /// Check if an update is available by comparing the compiled-in version
-/// against the cached latest-version file written by check-update.sh.
+/// against the cached latest-version file written by the background update checker.
 fn check_update_available(status_path: &Path) -> Option<String> {
     // latest-version lives in the same data dir as status.json
     let data_dir = status_path.parent()?;
