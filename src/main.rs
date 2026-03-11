@@ -71,6 +71,9 @@ async fn main() -> Result<()> {
             eprintln!("Error: hook-handler requires Unix (uses Unix domain sockets)");
             std::process::exit(1);
         }
+        Some("update") => {
+            return run_update().await;
+        }
         Some("start") => {
             return start_daemon().await;
         }
@@ -84,6 +87,7 @@ async fn main() -> Result<()> {
             eprintln!("                   --token <T>    Provide bot token non-interactively");
             eprintln!("                   --yes          Auto-confirm overwrites");
             eprintln!("  pair           Pair a new Telegram user");
+            eprintln!("  update         Update to the latest release");
             eprintln!("  statusline     Print daemon status (for shell integration)");
             #[cfg(unix)]
             eprintln!("  hook-handler   Handle Claude Code PreToolUse hooks (internal)");
@@ -135,6 +139,9 @@ async fn main() -> Result<()> {
             }
             std::process::exit(1);
         }
+        // Write our PID so `signal_stop()` can find and SIGTERM us.
+        use std::io::Write;
+        let _ = (&f).write_all(format!("{}", std::process::id()).as_bytes());
         f
     };
 
@@ -439,7 +446,88 @@ fn parse_setup_args(args: &[String]) -> setup::SetupOpts {
     opts
 }
 
-/// Launch the daemon as a detached background process and exit.
+/// Update crustyclaw to the latest release using install-binary.sh.
+async fn run_update() -> Result<()> {
+    let current = env!("CARGO_PKG_VERSION");
+    eprintln!("Current version: v{current}");
+
+    // Find install-binary.sh relative to the running binary.
+    // Expected layout: plugin/bin/crustyclaw + plugin/scripts/install-binary.sh
+    let exe = std::env::current_exe()?;
+    let script = exe
+        .parent()
+        .and_then(|bin_dir| {
+            let s = bin_dir.parent()?.join("scripts/install-binary.sh");
+            if s.exists() { Some(s) } else { None }
+        });
+
+    let script = match script {
+        Some(s) => s,
+        None => {
+            anyhow::bail!(
+                "Could not find install-binary.sh. \
+                 If you built from source, run: ./build.sh"
+            );
+        }
+    };
+
+    // Stop daemon if running before replacing the binary
+    let was_running = is_daemon_running();
+    if was_running {
+        eprintln!("Stopping daemon for update...");
+        signal_stop();
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    }
+
+    let status = std::process::Command::new("bash")
+        .arg(&script)
+        .arg("--force")
+        .status()?;
+
+    if !status.success() {
+        anyhow::bail!("Update failed");
+    }
+
+    // Clear the latest-version cache so statusline stops showing the hint
+    let data_dir = config::data_dir();
+    let _ = std::fs::remove_file(data_dir.join("latest-version"));
+
+    if was_running {
+        eprintln!("Restarting daemon...");
+        start_daemon().await?;
+    }
+
+    Ok(())
+}
+
+fn is_daemon_running() -> bool {
+    let data_dir = config::data_dir();
+    let lock_path = data_dir.join("daemon.lock");
+    if lock_path.exists() {
+        if let Ok(f) = std::fs::File::open(&lock_path) {
+            return f.try_lock().is_err();
+        }
+    }
+    false
+}
+
+fn signal_stop() {
+    #[cfg(unix)]
+    {
+        use std::io::Read;
+        let data_dir = config::data_dir();
+        let lock_path = data_dir.join("daemon.lock");
+        if let Ok(mut f) = std::fs::File::open(&lock_path) {
+            let mut pid_str = String::new();
+            if f.read_to_string(&mut pid_str).is_ok() {
+                if let Ok(pid) = pid_str.trim().parse::<i32>() {
+                    unsafe { libc::kill(pid, libc::SIGTERM); }
+                }
+            }
+        }
+    }
+}
+
 async fn start_daemon() -> Result<()> {
     let data_dir = config::data_dir();
 

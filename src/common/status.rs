@@ -240,6 +240,8 @@ pub fn print_statusline(status_path: &Path) {
     let d = dim(c);
     let r = reset(c);
 
+    let update_hint = check_update_available(status_path);
+
     let top = format!("{d}╭──────── 🦀 crustyclaw 🦀 ────────╮{r}");
     let bot = format!("{d}╰──────────────────────────────────╯{r}");
 
@@ -264,9 +266,32 @@ pub fn print_statusline(status_path: &Path) {
                  {d}│{r} 💓 {uptime}  {d}│{r}  📋 {jobs} {job_label}  {d}│{r}  {status_color}● {status_text}{r}  📡\n\
                  {bot}",
             );
+
+            if let Some(latest) = &update_hint {
+                print!(
+                    "\n{d}│{r}  {cyan}⬆ {latest} available{r} {d}— /crustyclaw:update{r}",
+                    cyan = cyan(c),
+                );
+            }
         }
     }
     let _ = std::io::Write::flush(&mut std::io::stdout());
+}
+
+/// Check if an update is available by comparing the compiled-in version
+/// against the cached latest-version file written by check-update.sh.
+fn check_update_available(status_path: &Path) -> Option<String> {
+    // latest-version lives in the same data dir as status.json
+    let data_dir = status_path.parent()?;
+    let cache_path = data_dir.join("latest-version");
+    let latest_tag = std::fs::read_to_string(cache_path).ok()?.trim().to_string();
+    let latest = latest_tag.strip_prefix('v').unwrap_or(&latest_tag);
+    let current = env!("CARGO_PKG_VERSION");
+    if latest != current && !latest.is_empty() {
+        Some(latest_tag)
+    } else {
+        None
+    }
 }
 
 fn load_status(path: &Path) -> Option<RuntimeStatus> {
@@ -300,6 +325,9 @@ fn green(color: bool) -> &'static str {
 }
 fn yellow(color: bool) -> &'static str {
     if color { "\x1b[1;93m" } else { "" }
+}
+fn cyan(color: bool) -> &'static str {
+    if color { "\x1b[1;96m" } else { "" }
 }
 fn reset(color: bool) -> &'static str {
     if color { "\x1b[0m" } else { "" }

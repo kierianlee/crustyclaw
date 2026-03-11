@@ -110,6 +110,7 @@ Then run `/crustyclaw:setup` to configure your Telegram bot and pair your accoun
 | `/crustyclaw:stop` | Gracefully stop the daemon |
 | `/crustyclaw:status` | Show daemon status |
 | `/crustyclaw:pair` | Pair a new Telegram user |
+| `/crustyclaw:update` | Update to the latest release |
 | `/crustyclaw:doctor` | Diagnose common issues (9 checks) |
 
 ---
@@ -266,6 +267,7 @@ crustyclaw              Start daemon (foreground)
 crustyclaw start        Start daemon (background, logs to /tmp/crustyclaw.log)
 crustyclaw setup        Interactive first-time setup
 crustyclaw pair         Pair a new Telegram user
+crustyclaw update       Update to the latest release
 crustyclaw statusline   Print daemon status (for status bar integration)
 crustyclaw help         Show usage
 ```

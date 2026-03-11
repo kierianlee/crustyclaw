@@ -2,9 +2,10 @@
 # Download the crustyclaw binary for the current platform from GitHub releases.
 #
 # Usage:
-#   install-binary.sh [--version VERSION]
+#   install-binary.sh [--version VERSION] [--force]
 #
 # If --version is omitted, fetches the latest release.
+# --force re-downloads even if the binary already exists.
 # Requires: curl, tar (macOS/Linux come with both)
 
 set -euo pipefail
@@ -16,15 +17,17 @@ BIN="${BIN_DIR}/crustyclaw"
 
 # --- Parse args ---------------------------------------------------------------
 VERSION=""
+FORCE=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --version) VERSION="$2"; shift 2 ;;
+    --force) FORCE=true; shift ;;
     *) shift ;;
   esac
 done
 
-# --- Skip if binary already exists and no specific version requested ----------
-if [ -x "$BIN" ] && [ -z "$VERSION" ]; then
+# --- Skip if binary already exists and no specific version/force requested ----
+if [ -x "$BIN" ] && [ -z "$VERSION" ] && [ "$FORCE" = false ]; then
   exit 0
 fi
 

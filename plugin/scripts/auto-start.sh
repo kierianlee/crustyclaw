@@ -27,6 +27,9 @@ if pgrep -f "crustyclaw$" >/dev/null 2>&1; then
     exit 0
 fi
 
+# Check for updates in background (non-blocking)
+"${PLUGIN_ROOT}/scripts/check-update.sh" >/dev/null 2>&1 &
+
 # Start in background — strip CLAUDECODE so the daemon's child `claude`
 # processes don't think they're nested inside Claude Code.
 env -u CLAUDECODE nohup "$BIN" > /tmp/crustyclaw.log 2>&1 &
