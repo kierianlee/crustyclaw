@@ -7,7 +7,15 @@ Run the crustyclaw doctor to check for common issues. Execute each check below a
 
 ## 1. Binary exists and is executable
 ```bash
-test -x "${CLAUDE_PLUGIN_ROOT}/bin/crustyclaw" && echo "OK: binary found" || echo "FAIL: binary not found at ${CLAUDE_PLUGIN_ROOT}/bin/crustyclaw"
+CC_BIN="${HOME}/.crustyclaw/bin/crustyclaw"
+if [ -x "$CC_BIN" ]; then
+    echo "OK: binary found at $CC_BIN"
+elif [ -x "${CLAUDE_PLUGIN_ROOT}/bin/crustyclaw" ]; then
+    CC_BIN="${CLAUDE_PLUGIN_ROOT}/bin/crustyclaw"
+    echo "OK: binary found at $CC_BIN (stable path missing — run /crustyclaw:update to fix)"
+else
+    echo "FAIL: binary not found — run /crustyclaw:setup to install"
+fi
 ```
 
 ## 2. Claude CLI available
@@ -40,10 +48,9 @@ fi
 ```
 
 ## 6. Stale hooks in settings.json
-Check if the working directory's `.claude/settings.json` has PreToolUse hooks pointing to binaries that don't exist:
+Check if the global `~/.claude/settings.json` has PreToolUse hooks pointing to binaries that don't exist:
 ```bash
-DATA_DIR="${CRUSTYCLAW_DATA_DIR:-$HOME/.crustyclaw}"
-SETTINGS="${DATA_DIR}/.claude/settings.json"
+SETTINGS="${HOME}/.claude/settings.json"
 if [ -f "$SETTINGS" ]; then
     echo "Settings file: $SETTINGS"
     cat "$SETTINGS"
@@ -63,7 +70,7 @@ fi
 
 ## 7. Daemon status
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/bin/crustyclaw" statusline 2>/dev/null || echo "Daemon not running"
+CC_BIN="${HOME}/.crustyclaw/bin/crustyclaw"; [ -x "$CC_BIN" ] || CC_BIN="${CLAUDE_PLUGIN_ROOT}/bin/crustyclaw"; "$CC_BIN" statusline 2>/dev/null || echo "Daemon not running"
 ```
 
 ## 8. CLAUDECODE env leak

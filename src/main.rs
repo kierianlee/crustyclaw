@@ -506,12 +506,88 @@ async fn run_update() -> Result<()> {
     let data_dir = config::data_dir();
     let _ = std::fs::remove_file(data_dir.join("latest-version"));
 
+    // Sync plugin files (commands, scripts, hooks) to the active Claude plugin
+    // cache directory. When the plugin version bumps, Claude Code creates a new
+    // cache dir from the repo — but install-binary.sh only updates the binary.
+    // This ensures the cached plugin files match the new version.
+    if let Some(plugin_root) = exe.parent().and_then(|b| b.parent()) {
+        sync_plugin_cache(plugin_root);
+    }
+
     if was_running {
         eprintln!("Restarting daemon...");
         start_daemon().await?;
     }
 
     Ok(())
+}
+
+/// Copy plugin files (commands, scripts, hooks) from the current plugin root
+/// to the active Claude Code plugin cache directory. This handles the case
+/// where the marketplace version bumps and Claude creates a new cache dir
+/// that only has repo files (no binary, possibly outdated commands).
+fn sync_plugin_cache(current_plugin_root: &std::path::Path) {
+    let home = match std::env::var("HOME") {
+        Ok(h) => h,
+        Err(_) => return,
+    };
+    let cache_base = std::path::PathBuf::from(&home)
+        .join(".claude/plugins/cache/crustyclaw/crustyclaw");
+
+    if !cache_base.exists() {
+        return;
+    }
+
+    // Find the newest version directory in the cache
+    let newest = match std::fs::read_dir(&cache_base) {
+        Ok(entries) => entries
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+            .max_by_key(|e| e.file_name()),
+        Err(_) => return,
+    };
+
+    let target = match newest {
+        Some(entry) => entry.path(),
+        None => return,
+    };
+
+    // Don't sync to ourselves
+    if target == current_plugin_root {
+        return;
+    }
+
+    // Sync commands, scripts, hooks directories
+    for dir_name in &["commands", "scripts", "hooks"] {
+        let src = current_plugin_root.join(dir_name);
+        let dst = target.join(dir_name);
+        if src.is_dir() {
+            let _ = std::fs::create_dir_all(&dst);
+            if let Ok(entries) = std::fs::read_dir(&src) {
+                for entry in entries.flatten() {
+                    let dest_file = dst.join(entry.file_name());
+                    let _ = std::fs::copy(entry.path(), &dest_file);
+                }
+            }
+        }
+    }
+
+    // Copy binary if it exists
+    let src_bin = current_plugin_root.join("bin/crustyclaw");
+    if src_bin.exists() {
+        let dst_bin_dir = target.join("bin");
+        let _ = std::fs::create_dir_all(&dst_bin_dir);
+        let dst_bin = dst_bin_dir.join("crustyclaw");
+        if std::fs::copy(&src_bin, &dst_bin).is_ok() {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(&dst_bin, std::fs::Permissions::from_mode(0o755));
+            }
+        }
+    }
+
+    eprintln!("Synced plugin files to cache: {}", target.display());
 }
 
 /// Check GitHub for the latest release and cache it for the statusline.

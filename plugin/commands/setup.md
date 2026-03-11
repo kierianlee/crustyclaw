@@ -32,7 +32,7 @@ Wait for the user to provide the token.
 Once you have the token, run setup. This validates it and starts the pairing flow (prints a code for the user to send to the bot, then waits up to 60s):
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/bin/crustyclaw" setup --token "<TOKEN>" --yes
+CC_BIN="${HOME}/.crustyclaw/bin/crustyclaw"; [ -x "$CC_BIN" ] || CC_BIN="${CLAUDE_PLUGIN_ROOT}/bin/crustyclaw"; "$CC_BIN" setup --token "<TOKEN>" --yes
 ```
 
 Show the user the pairing code from the output and tell them to send it to their bot on Telegram.

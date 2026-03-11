@@ -88,3 +88,12 @@ mv "${TMP_DIR}/crustyclaw" "$BIN"
 chmod +x "$BIN"
 
 echo "Installed crustyclaw ${VERSION} to ${BIN}"
+
+# --- Also install to stable path (~/.crustyclaw/bin/) -------------------------
+# This path survives plugin cache version bumps. Commands use it as the primary
+# binary location so version upgrades don't break anything.
+STABLE_DIR="${HOME}/.crustyclaw/bin"
+mkdir -p "$STABLE_DIR"
+cp "$BIN" "${STABLE_DIR}/crustyclaw"
+chmod +x "${STABLE_DIR}/crustyclaw"
+echo "Installed crustyclaw ${VERSION} to ${STABLE_DIR}/crustyclaw"
