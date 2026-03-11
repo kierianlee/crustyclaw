@@ -145,7 +145,7 @@ async fn poll_loop(
         }
     }
 
-    if let Err(e) = send_text(&bot, admin_chat_id, "crustyclaw daemon started.").await {
+    if let Err(e) = send_text(&bot, admin_chat_id, "CrustyClaw at your service 🦀").await {
         tracing::warn!(error = %e, "Failed to send startup message to admin");
     }
 
