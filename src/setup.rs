@@ -6,8 +6,30 @@ use teloxide::prelude::*;
 use crate::common::{config, util};
 use crate::telegram;
 
+/// CLI options for non-interactive setup.
+pub struct SetupOpts {
+    /// Pre-supplied bot token (skip interactive prompt).
+    pub token: Option<String>,
+    /// Auto-confirm overwrite of existing config.
+    pub yes: bool,
+}
+
+impl Default for SetupOpts {
+    fn default() -> Self {
+        Self {
+            token: None,
+            yes: false,
+        }
+    }
+}
+
 /// Run the interactive setup wizard.
 pub async fn run() -> Result<()> {
+    run_with_opts(SetupOpts::default()).await
+}
+
+/// Run setup with optional pre-supplied values for non-interactive use.
+pub async fn run_with_opts(opts: SetupOpts) -> Result<()> {
     println!("crustyclaw setup\n");
 
     // Step 1: Claude authentication
@@ -15,10 +37,10 @@ pub async fn run() -> Result<()> {
     println!("  Claude auth: {auth}\n");
 
     // Step 2: Telegram configuration
-    let (token, chat_id) = configure_telegram().await?;
+    let (token, chat_id) = configure_telegram_with_opts(opts.token).await?;
 
     // Step 3: Write config
-    write_config(&token, chat_id).await?;
+    write_config_with_opts(&token, chat_id, opts.yes).await?;
 
     println!("\nSetup complete. Run `crustyclaw` to start the daemon.");
     Ok(())
@@ -107,14 +129,25 @@ async fn check_auth_status() -> Option<String> {
 // Step 2: Telegram
 // ---------------------------------------------------------------------------
 
-async fn configure_telegram() -> Result<(String, i64)> {
+async fn configure_telegram_with_opts(
+    token_opt: Option<String>,
+) -> Result<(String, i64)> {
     println!("Step 2: Telegram bot\n");
-    println!("  Create a bot via @BotFather on Telegram to get a token.\n");
 
-    let token = prompt("  Bot token: ").await?;
-    if token.is_empty() {
-        anyhow::bail!("Bot token cannot be empty");
-    }
+    let token = if let Some(t) = token_opt {
+        if t.is_empty() {
+            anyhow::bail!("Bot token cannot be empty");
+        }
+        println!("  Using provided bot token.");
+        t
+    } else {
+        println!("  Create a bot via @BotFather on Telegram to get a token.\n");
+        let t = prompt("  Bot token: ").await?;
+        if t.is_empty() {
+            anyhow::bail!("Bot token cannot be empty");
+        }
+        t
+    };
 
     // Validate by calling getMe. Use make_bot so the HTTP client timeout
     // exceeds the long-polling timeout used in detect_chat_id.
@@ -137,33 +170,17 @@ async fn configure_telegram() -> Result<(String, i64)> {
     println!("  Send this code to @{username}: {code}");
     println!("  Waiting up to 60 seconds...\n");
 
-    let chat_id = match crate::pair::poll_for_code(&bot, &code, 60).await {
-        Ok((id, name)) => {
-            println!("  Received code from {name} (chat {id})");
-            id
-        }
-        Err(_) => {
-            println!("  Timed out waiting for the code.");
-            prompt_chat_id().await?
-        }
-    };
+    let (chat_id, name) = crate::pair::poll_for_code(&bot, &code, 60).await?;
+    println!("  Received code from {name} (chat {chat_id})");
 
     Ok((token, chat_id))
-}
-
-
-async fn prompt_chat_id() -> Result<i64> {
-    let input = prompt("  Admin chat ID: ").await?;
-    input
-        .parse()
-        .map_err(|_| anyhow::anyhow!("Invalid chat ID: must be an integer"))
 }
 
 // ---------------------------------------------------------------------------
 // Step 3: Write config
 // ---------------------------------------------------------------------------
 
-async fn write_config(token: &str, chat_id: i64) -> Result<()> {
+async fn write_config_with_opts(token: &str, chat_id: i64, auto_yes: bool) -> Result<()> {
     println!("\nStep 3: Writing configuration\n");
 
     let data_dir = config::data_dir();
@@ -171,15 +188,21 @@ async fn write_config(token: &str, chat_id: i64) -> Result<()> {
 
     let config_path = config::config_path(&data_dir);
 
-    if tokio::fs::try_exists(&config_path).await.unwrap_or(false)
-        && !prompt_yes_no(&format!(
-            "  {} already exists. Overwrite?",
-            config_path.display()
-        ))
-        .await?
-    {
-        println!("  Keeping existing config.");
-        return Ok(());
+    if tokio::fs::try_exists(&config_path).await.unwrap_or(false) {
+        let overwrite = if auto_yes {
+            println!("  {} already exists. Overwriting (--yes).", config_path.display());
+            true
+        } else {
+            prompt_yes_no(&format!(
+                "  {} already exists. Overwrite?",
+                config_path.display()
+            ))
+            .await?
+        };
+        if !overwrite {
+            println!("  Keeping existing config.");
+            return Ok(());
+        }
     }
 
     let json = serde_json::to_string_pretty(&serde_json::json!({

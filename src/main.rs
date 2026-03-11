@@ -36,7 +36,9 @@ async fn main() -> Result<()> {
             return Ok(());
         }
         Some("setup") => {
-            return setup::run().await;
+            let args: Vec<String> = std::env::args().skip(2).collect();
+            let opts = parse_setup_args(&args);
+            return setup::run_with_opts(opts).await;
         }
         Some("pair") => {
             return pair::run().await;
@@ -79,6 +81,8 @@ async fn main() -> Result<()> {
             eprintln!("  (none)         Start the daemon (foreground)");
             eprintln!("  start          Start the daemon (background)");
             eprintln!("  setup          Interactive first-time setup");
+            eprintln!("                   --token <T>    Provide bot token non-interactively");
+            eprintln!("                   --yes          Auto-confirm overwrites");
             eprintln!("  pair           Pair a new Telegram user");
             eprintln!("  statusline     Print daemon status (for shell integration)");
             #[cfg(unix)]
@@ -409,6 +413,30 @@ async fn main() -> Result<()> {
 
     tracing::info!("Shutdown complete");
     Ok(())
+}
+
+/// Parse `crustyclaw setup` flags: `--token <T>`, `--yes`.
+fn parse_setup_args(args: &[String]) -> setup::SetupOpts {
+    let mut opts = setup::SetupOpts::default();
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--token" => {
+                i += 1;
+                if i < args.len() {
+                    opts.token = Some(args[i].clone());
+                }
+            }
+            "--yes" | "-y" => {
+                opts.yes = true;
+            }
+            other => {
+                eprintln!("Warning: unknown setup flag: {other}");
+            }
+        }
+        i += 1;
+    }
+    opts
 }
 
 /// Launch the daemon as a detached background process and exit.
