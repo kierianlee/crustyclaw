@@ -155,17 +155,24 @@ pub fn spawn_writer(tracker: Arc<StatusTracker>, path: PathBuf) -> JoinHandle<()
 // Statusline registration in .claude/settings.json
 // ---------------------------------------------------------------------------
 
-/// Write the `statusLine` entry into `{working_dir}/.claude/settings.json`
-/// so Claude Code displays our status bar. Uses the absolute path to the
-/// running binary, like ClaudeClaw does.
-pub fn install_statusline(working_dir: &Path, data_dir: &Path) {
-    let claude_dir = working_dir.join(".claude");
+/// Resolve `~/.claude/settings.json`.
+fn global_claude_settings_path() -> Option<PathBuf> {
+    let home = std::env::var("HOME").ok()?;
+    let claude_dir = PathBuf::from(home).join(".claude");
     if let Err(e) = std::fs::create_dir_all(&claude_dir) {
-        tracing::warn!(error = %e, "Failed to create .claude dir for statusline");
-        return;
+        tracing::warn!(error = %e, "Failed to create ~/.claude dir for statusline");
+        return None;
     }
+    Some(claude_dir.join("settings.json"))
+}
 
-    let settings_path = claude_dir.join("settings.json");
+/// Write the `statusLine` entry into `~/.claude/settings.json`
+/// so Claude Code displays our status bar globally.
+pub fn install_statusline(data_dir: &Path) {
+    let settings_path = match global_claude_settings_path() {
+        Some(p) => p,
+        None => return,
+    };
 
     let mut settings: serde_json::Value = match std::fs::read_to_string(&settings_path) {
         Ok(contents) => serde_json::from_str(&contents).unwrap_or_else(|_| serde_json::json!({})),
@@ -242,9 +249,12 @@ fn install_stable_symlink(data_dir: &Path) -> Option<PathBuf> {
     Some(stable_path)
 }
 
-/// Remove the `statusLine` entry from `{working_dir}/.claude/settings.json`.
-pub fn remove_statusline(working_dir: &Path) {
-    let settings_path = working_dir.join(".claude").join("settings.json");
+/// Remove the `statusLine` entry from the global `~/.claude/settings.json`.
+pub fn remove_statusline() {
+    let settings_path = match global_claude_settings_path() {
+        Some(p) => p,
+        None => return,
+    };
 
     let mut settings: serde_json::Value = match std::fs::read_to_string(&settings_path) {
         Ok(contents) => match serde_json::from_str(&contents) {

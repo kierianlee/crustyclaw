@@ -242,12 +242,8 @@ async fn main() -> Result<()> {
 
     let working_dir = config.effective_working_dir(&data_dir);
 
-    // Register statusLine in .claude/settings.json so Claude Code shows our status bar.
-    // Use CWD (the Claude Code project dir) rather than working_dir (which may be
-    // ~/.crustyclaw). When started via /crustyclaw:start, CWD is the project directory
-    // where Claude Code reads settings.
-    let statusline_dir = std::env::current_dir().unwrap_or_else(|_| working_dir.clone());
-    status::install_statusline(&statusline_dir, &data_dir);
+    // Register statusLine in ~/.claude/settings.json so Claude Code shows our status bar.
+    status::install_statusline(&data_dir);
 
     let status_tracker = Arc::new(status::StatusTracker::new(config.heartbeat_enabled));
     let status_writer_handle =
@@ -434,7 +430,7 @@ async fn main() -> Result<()> {
     }
 
     status::flush_final(&status_tracker, &status_path).await;
-    status::remove_statusline(&statusline_dir);
+    status::remove_statusline();
 
     tracing::info!("Shutdown complete");
     Ok(())
