@@ -475,32 +475,11 @@ async fn run_update() -> Result<()> {
     let current = env!("CARGO_PKG_VERSION");
     eprintln!("Current version: v{current}");
 
-    // Find install-binary.sh relative to the running binary.
-    // Expected layout: plugin/bin/crustyclaw + plugin/scripts/install-binary.sh
-    let exe = std::env::current_exe()?;
-    let script = exe
-        .parent()
-        .and_then(|bin_dir| {
-            let s = bin_dir.parent()?.join("scripts/install-binary.sh");
-            if s.exists() { Some(s) } else { None }
-        });
-
-    let script = match script {
-        Some(s) => s,
-        None => {
-            anyhow::bail!(
-                "Could not find install-binary.sh. \
-                 If you built from source, run: ./build.sh"
-            );
-        }
-    };
-
     // Stop daemon if running before replacing the binary
     let was_running = is_daemon_running();
     if was_running {
         eprintln!("Stopping daemon for update...");
         signal_stop();
-        // Wait for the daemon to release its lock (up to 5s).
         for _ in 0..50 {
             if !is_daemon_running() {
                 break;
@@ -509,26 +488,39 @@ async fn run_update() -> Result<()> {
         }
     }
 
+    // 1. Update the Claude Code plugin first — pulls latest commands, hooks,
+    //    plugin.json, and install-binary.sh from the marketplace registry.
+    eprintln!("Updating plugin...");
+    let plugin_status = std::process::Command::new("claude")
+        .args(["plugin", "update", "crustyclaw@crustyclaw"])
+        .status();
+
+    match plugin_status {
+        Ok(s) if s.success() => eprintln!("Plugin updated"),
+        Ok(s) => eprintln!("Warning: plugin update exited with {s}"),
+        Err(e) => eprintln!("Warning: could not run `claude plugin update`: {e}"),
+    }
+
+    // 2. Run install-binary.sh from the (now-updated) plugin cache to
+    //    download the matching binary release.
+    let script = find_install_script()
+        .ok_or_else(|| anyhow::anyhow!(
+            "Could not find install-binary.sh. \
+             If you built from source, run: ./build.sh"
+        ))?;
+
     let status = std::process::Command::new("bash")
         .arg(&script)
         .arg("--force")
         .status()?;
 
     if !status.success() {
-        anyhow::bail!("Update failed");
+        anyhow::bail!("Binary update failed");
     }
 
     // Clear the latest-version cache so statusline stops showing the hint
     let data_dir = config::data_dir();
     let _ = std::fs::remove_file(data_dir.join("latest-version"));
-
-    // Sync plugin files (commands, scripts, hooks) to the active Claude plugin
-    // cache directory. When the plugin version bumps, Claude Code creates a new
-    // cache dir from the repo — but install-binary.sh only updates the binary.
-    // This ensures the cached plugin files match the new version.
-    if let Some(plugin_root) = exe.parent().and_then(|b| b.parent()) {
-        sync_plugin_cache(plugin_root);
-    }
 
     if was_running {
         eprintln!("Restarting daemon...");
@@ -538,72 +530,31 @@ async fn run_update() -> Result<()> {
     Ok(())
 }
 
-/// Copy plugin files (commands, scripts, hooks) from the current plugin root
-/// to the active Claude Code plugin cache directory. This handles the case
-/// where the marketplace version bumps and Claude creates a new cache dir
-/// that only has repo files (no binary, possibly outdated commands).
-fn sync_plugin_cache(current_plugin_root: &std::path::Path) {
-    let home = match std::env::var("HOME") {
-        Ok(h) => h,
-        Err(_) => return,
-    };
+/// Find install-binary.sh in the plugin cache (newest version first) or
+/// relative to the current exe (for source builds).
+fn find_install_script() -> Option<std::path::PathBuf> {
+    // Check plugin cache directories (newest first)
+    let home = std::env::var("HOME").ok()?;
     let cache_base = std::path::PathBuf::from(&home)
         .join(".claude/plugins/cache/crustyclaw/crustyclaw");
-
-    if !cache_base.exists() {
-        return;
-    }
-
-    // Find the newest version directory in the cache
-    let newest = match std::fs::read_dir(&cache_base) {
-        Ok(entries) => entries
+    if let Ok(entries) = std::fs::read_dir(&cache_base) {
+        let mut dirs: Vec<_> = entries
             .filter_map(|e| e.ok())
             .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
-            .max_by_key(|e| e.file_name()),
-        Err(_) => return,
-    };
-
-    let target = match newest {
-        Some(entry) => entry.path(),
-        None => return,
-    };
-
-    // Don't sync to ourselves
-    if target == current_plugin_root {
-        return;
-    }
-
-    // Sync commands, scripts, hooks directories
-    for dir_name in &["commands", "scripts", "hooks"] {
-        let src = current_plugin_root.join(dir_name);
-        let dst = target.join(dir_name);
-        if src.is_dir() {
-            let _ = std::fs::create_dir_all(&dst);
-            if let Ok(entries) = std::fs::read_dir(&src) {
-                for entry in entries.flatten() {
-                    let dest_file = dst.join(entry.file_name());
-                    let _ = std::fs::copy(entry.path(), &dest_file);
-                }
+            .map(|e| e.path())
+            .collect();
+        dirs.sort_by(|a, b| b.file_name().cmp(&a.file_name()));
+        for dir in dirs {
+            let s = dir.join("scripts/install-binary.sh");
+            if s.exists() {
+                return Some(s);
             }
         }
     }
-
-    // Copy binary if it exists
-    let src_bin = current_plugin_root.join("bin/crustyclaw");
-    if src_bin.exists() {
-        let dst_bin_dir = target.join("bin");
-        let _ = std::fs::create_dir_all(&dst_bin_dir);
-        let dst_bin = dst_bin_dir.join("crustyclaw");
-        if std::fs::copy(&src_bin, &dst_bin).is_ok() {
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let _ = std::fs::set_permissions(&dst_bin, std::fs::Permissions::from_mode(0o755));
-            }
-        }
-    }
-
-    eprintln!("Synced plugin files to cache: {}", target.display());
+    // Fallback: relative to exe (source builds: plugin/bin/crustyclaw)
+    let exe = std::env::current_exe().ok()?;
+    let s = exe.parent()?.parent()?.join("scripts/install-binary.sh");
+    if s.exists() { Some(s) } else { None }
 }
 
 /// Check GitHub for the latest release and cache it for the statusline.
