@@ -63,6 +63,10 @@ pub struct DaemonConfig {
     pub telegram_approval: bool,
     #[serde(default = "default_approval_timeout")]
     pub approval_timeout_secs: u64,
+
+    // Update check
+    #[serde(default = "default_update_check_interval")]
+    pub update_check_interval_secs: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -121,6 +125,10 @@ fn default_web_port() -> u16 {
 
 fn default_approval_timeout() -> u64 {
     120
+}
+
+fn default_update_check_interval() -> u64 {
+    300 // 5 minutes
 }
 
 impl DaemonConfig {
@@ -186,6 +194,18 @@ impl DaemonConfig {
             })
         {
             self.admin_chat_id = v;
+        }
+        if let Some(v) = std::env::var("CRUSTYCLAW_UPDATE_CHECK_INTERVAL")
+            .ok()
+            .and_then(|s| match s.parse() {
+                Ok(n) => Some(n),
+                Err(_) => {
+                    tracing::warn!(value = %s, "CRUSTYCLAW_UPDATE_CHECK_INTERVAL is not a valid integer, ignoring");
+                    None
+                }
+            })
+        {
+            self.update_check_interval_secs = v;
         }
     }
 

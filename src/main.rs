@@ -153,6 +153,7 @@ async fn main() -> Result<()> {
         })
         .await?;
     }
+
     tracing::info!(data_dir = %data_dir.display(), "Data directory");
 
     let config_path = config::config_path(&data_dir);
@@ -222,12 +223,29 @@ async fn main() -> Result<()> {
 
     let config = Arc::new(config);
 
+    // Check for updates periodically in the background.
+    // Writes latest version to data_dir/latest-version for the statusline.
+    if config.update_check_interval_secs > 0 {
+        let dd = data_dir.clone();
+        let interval_secs = config.update_check_interval_secs;
+        tokio::task::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                interval.tick().await;
+                if let Err(e) = check_for_update(&dd).await {
+                    tracing::debug!(error = %e, "Background update check failed");
+                }
+            }
+        });
+    }
+
     let working_dir = config.effective_working_dir(&data_dir);
 
     // Register statusLine in .claude/settings.json so Claude Code shows our status bar.
     // Use CWD (the Claude Code project dir) rather than working_dir (which may be
-    // ~/.crustyclaw). When launched from Claude Code (plugin start or SessionStart hook),
-    // CWD is the project directory where Claude Code reads settings.
+    // ~/.crustyclaw). When started via /crustyclaw:start, CWD is the project directory
+    // where Claude Code reads settings.
     let statusline_dir = std::env::current_dir().unwrap_or_else(|_| working_dir.clone());
     status::install_statusline(&statusline_dir);
 
@@ -495,6 +513,28 @@ async fn run_update() -> Result<()> {
     if was_running {
         eprintln!("Restarting daemon...");
         start_daemon().await?;
+    }
+
+    Ok(())
+}
+
+/// Check GitHub for the latest release and cache it for the statusline.
+async fn check_for_update(data_dir: &std::path::Path) -> Result<()> {
+    let cache_path = data_dir.join("latest-version");
+
+    let output = tokio::process::Command::new("curl")
+        .args(["-fsSL", "--max-time", "5",
+               "https://api.github.com/repos/kierianlee/crustyclaw/releases/latest"])
+        .output()
+        .await?;
+
+    if !output.status.success() {
+        anyhow::bail!("curl failed");
+    }
+
+    let body: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+    if let Some(tag) = body.get("tag_name").and_then(|v| v.as_str()) {
+        tokio::fs::write(&cache_path, tag).await?;
     }
 
     Ok(())

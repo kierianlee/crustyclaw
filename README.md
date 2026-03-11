@@ -87,8 +87,6 @@ There are **3 ways** to run crustyclaw:
 
 ### Option 1: Claude Code Plugin (Recommended)
 
-The plugin auto-starts the daemon when you open a Claude Code session and stops it when you close. No manual intervention needed.
-
 **Install from the marketplace:**
 
 ```
@@ -97,7 +95,7 @@ The plugin auto-starts the daemon when you open a Claude Code session and stops 
 /reload-plugins
 ```
 
-Then run `/crustyclaw:setup` to configure your Telegram bot and pair your account. That's it — the daemon starts automatically from now on.
+Then run `/crustyclaw:setup` to configure your Telegram bot and pair your account, and `/crustyclaw:start` to start the daemon.
 
 > **Building from source?** Clone the repo, run `./build.sh` (requires [Rust 1.89+](https://rustup.rs/) and [Bun](https://bun.sh)), then `claude --plugin-dir ./plugin`.
 
@@ -212,6 +210,7 @@ Config lives at `~/.crustyclaw/config.json` (created by `setup`). All fields can
 | `approval_timeout_secs` | — | `CRUSTYCLAW_APPROVAL_TIMEOUT` | Seconds to wait for approval |
 | `max_budget_usd` | — | `CRUSTYCLAW_MAX_BUDGET` | Per-invocation budget cap |
 | `working_dir` | — | `CRUSTYCLAW_WORKING_DIR` | Working directory for Claude |
+| `update_check_interval_secs` | `300` | `CRUSTYCLAW_UPDATE_CHECK_INTERVAL` | Seconds between update checks (0 to disable) |
 | `allowed_tools` | — | — | Whitelist of tool names |
 | `disallowed_tools` | — | — | Blacklist of tool names |
 
